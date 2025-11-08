@@ -1,29 +1,35 @@
 name: Publish ready-made ZIP
 
 on:
-  workflow_dispatch: {}   # 允许手动触发
+  workflow_dispatch: {}
   push:
-    branches: [ main ]
+    branches: [ "main" ]
     paths:
       - ".github/workflows/publish-zip.yml"
+
+permissions:
+  contents: write
 
 jobs:
   build_and_release:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout (not strictly needed)
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Reconstruct project tree (backend + frontend + README)
+      - name: Ensure zip exists
+        run: sudo apt-get update && sudo apt-get install -y zip
+
+      - name: Reconstruct project tree
         shell: bash
         run: |
-          set -eux
+          set -e
           ROOT="taobao_DIY_win_exe_ready"
           BACK="$ROOT/backend"
           FRONT="$ROOT/frontend"
           mkdir -p "$BACK" "$FRONT"
 
-          ############ backend/app.py ############
+          ########## backend/app.py ##########
           cat > "$BACK/app.py" << 'PY'
 import os, io, base64, re
 from typing import List
@@ -124,7 +130,7 @@ async def health():
     return {"ok":True}
 PY
 
-          ############ backend/requirements.txt ############
+          ########## backend/requirements.txt ##########
           cat > "$BACK/requirements.txt" << 'REQ'
 fastapi
 uvicorn
@@ -132,7 +138,7 @@ pillow
 openai>=1.0.0
 REQ
 
-          ############ backend/run-backend.bat ############
+          ########## backend/run-backend.bat ##########
           cat > "$BACK/run-backend.bat" << 'BAT'
 @echo off
 cd /d %~dp0
@@ -145,7 +151,7 @@ set OPENAI_MODEL=gpt-4o-mini
 python app.py
 BAT
 
-          ############ frontend/package.json ############
+          ########## frontend/package.json ##########
           cat > "$FRONT/package.json" << 'PKG'
 {
   "name": "diy-uploader",
@@ -171,7 +177,7 @@ BAT
 }
 PKG
 
-          ############ frontend/main.js ############
+          ########## frontend/main.js ##########
           cat > "$FRONT/main.js" << 'JS'
 const { app, BrowserWindow } = require("electron");
 function createWindow () {
@@ -182,7 +188,7 @@ app.whenReady().then(() => { createWindow(); app.on("activate", () => { if (Brow
 app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
 JS
 
-          ############ frontend/index.html ############
+          ########## frontend/index.html ##########
           cat > "$FRONT/index.html" << 'HTML'
 <!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <title>DIY配件 - 上新助手（Win EXE 版）</title>
@@ -242,11 +248,10 @@ document.getElementById("btnTitle").addEventListener("click",async ()=>{
 </body></html>
 HTML
 
-          ############ frontend placeholders ############
           : > "$FRONT/renderer.js"
           : > "$FRONT/preload.js"
 
-          ############ README ############
+          ########## README ##########
           cat > "$ROOT/README_win_exe.md" << 'MD'
 # Windows 可执行版（含 GPT 标题 + 图片优化）快速指引
 ## 后端
@@ -260,20 +265,20 @@ HTML
 生成安装包：`frontend\dist\DIY-Uploader-Setup-0.2.0.exe`
 MD
 
-      - name: Create ZIP with fixed filename
+      - name: Create ZIP (fixed filename)
+        shell: bash
         run: |
-          set -eux
+          set -e
           ZIP="taobao_DIY_win_exe_ready_20251108_081529.zip"
           (cd taobao_DIY_win_exe_ready && zip -r "../$ZIP" .)
           ls -lh "$ZIP"
 
-      - name: Publish Release with ZIP
+      - name: Release with unique tag
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: v1.0.0
-          name: "Ready-made ZIP v1.0.0"
-          body: "自动生成并发布的完整工程包（Win EXE + GPT + 图片优化）"
-          files: |
-            taobao_DIY_win_exe_ready_20251108_081529.zip
+          tag_name: "v${{ github.run_number }}-${{ github.run_id }}"
+          name: "Ready-made ZIP"
+          body: "自动生成的完整工程包（Win EXE + GPT + 图片优化）"
+          files: "taobao_DIY_win_exe_ready_20251108_081529.zip"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

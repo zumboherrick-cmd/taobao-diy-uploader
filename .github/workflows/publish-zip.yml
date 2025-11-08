@@ -1,4 +1,4 @@
-name: Build WeChat Image Optimizer + GPT (Full Project)
+name: Publish ZIP (WeChat Image Optimizer + GPT)
 
 on:
   workflow_dispatch:
@@ -18,262 +18,80 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y zip
 
-      - name: Build full project and ZIP
+      - name: Build project tree and zip
         shell: bash
         run: |
           set -e
-          ROOT="wechat_image_gpt"
-          mkdir -p "$ROOT"
-          cd "$ROOT"
+          ROOT="wechat_image_gpt_min"
+          mkdir -p "$ROOT/frontend"
+          mkdir -p "$ROOT/backend"
+          mkdir -p "$ROOT/outputs"
 
-          ########################################
-          # backend/app.py
-          ########################################
-          cat > app.py << 'PY'
-import os, io, base64, re, json
-from typing import List
-from fastapi import FastAPI, UploadFile, File, Form
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from PIL import Image, ImageFilter, ImageOps
+          # ---------- backend/app.py ----------
+          printf "import os, io, base64, re, json\n" > "$ROOT/backend/app.py"
+          printf "from typing import List\n" >> "$ROOT/backend/app.py"
+          printf "from fastapi import FastAPI, UploadFile, File, Form\n" >> "$ROOT/backend/app.py"
+          printf "from fastapi.middleware.cors import CORSMiddleware\n" >> "$ROOT/backend/app.py"
+          printf "from fastapi.responses import JSONResponse\n" >> "$ROOT/backend/app.py"
+          printf "from PIL import Image, ImageFilter, ImageOps\n\n" >> "$ROOT/backend/app.py"
+          printf "OPENAI_API_KEY=os.getenv('OPENAI_API_KEY','').strip()\nOPENAI_MODEL=os.getenv('OPENAI_MODEL','gpt-4o-mini')\n\n" >> "$ROOT/backend/app.py"
+          printf "app=FastAPI(title='Image Optimizer with GPT')\n" >> "$ROOT/backend/app.py"
+          printf "app.add_middleware(CORSMiddleware,allow_origins=['*'],allow_credentials=True,allow_methods=['*'],allow_headers=['*'])\n" >> "$ROOT/backend/app.py"
+          printf "os.makedirs('outputs',exist_ok=True)\n\n" >> "$ROOT/backend/app.py"
+          printf "def enhance_image(img,pad=40,background='white',sharpen=1):\n" >> "$ROOT/backend/app.py"
+          printf "    img=ImageOps.contain(img,(1200-pad*2,1200-pad*2))\n" >> "$ROOT/backend/app.py"
+          printf "    canvas=Image.new('RGB',(1200,1200),(255,255,255))\n" >> "$ROOT/backend/app.py"
+          printf "    canvas.paste(img,((1200-img.width)//2,(1200-img.height)//2))\n" >> "$ROOT/backend/app.py"
+          printf "    for _ in range(max(0,min(int(sharpen),2))):\n        canvas=canvas.filter(ImageFilter.SHARPEN)\n    return canvas\n\n" >> "$ROOT/backend/app.py"
+          printf "@app.post('/process')\n" >> "$ROOT/backend/app.py"
+          printf "async def process_image(file:UploadFile=File(...)):\n" >> "$ROOT/backend/app.py"
+          printf "    data=await file.read(); img=Image.open(io.BytesIO(data)).convert('RGBA')\n" >> "$ROOT/backend/app.py"
+          printf "    out=enhance_image(img); path='outputs/optimized.jpg'; out.save(path,'JPEG',quality=92)\n" >> "$ROOT/backend/app.py"
+          printf "    with open(path,'rb') as f: b64=base64.b64encode(f.read()).decode('utf-8')\n" >> "$ROOT/backend/app.py"
+          printf "    return {'ok':True,'preview_b64':b64,'output':path}\n\n" >> "$ROOT/backend/app.py"
+          printf "@app.post('/gpt_marketing')\n" >> "$ROOT/backend/app.py"
+          printf "async def gpt_marketing(brand:str=Form(''),material:str=Form(''),spec:str=Form(''),shape:str=Form(''),use:str=Form('')):\n" >> "$ROOT/backend/app.py"
+          printf "    prompt=f'品牌：{brand}；材质：{material}；规格：{spec}；形状：{shape}；适用：{use}。输出JSON:{'{'}title,bullets[5],badge_text{'}'}，标题<=60字，避免极限词。'\n" >> "$ROOT/backend/app.py"
+          printf "    try:\n" >> "$ROOT/backend/app.py"
+          printf "        if not OPENAI_API_KEY: raise ValueError('no_key')\n" >> "$ROOT/backend/app.py"
+          printf "        from openai import OpenAI\n        client=OpenAI(api_key=OPENAI_API_KEY)\n" >> "$ROOT/backend/app.py"
+          printf "        r=client.responses.create(model=OPENAI_MODEL,input=prompt)\n" >> "$ROOT/backend/app.py"
+          printf "        text=r.output_text.strip(); text=re.sub(r'^```(json)?|```$','',text,flags=re.I|re.M).strip()\n" >> "$ROOT/backend/app.py"
+          printf "        data=json.loads(text)\n        return {'ok':True,'title':data.get('title',''),'bullets':data.get('bullets',[]),'badge_text':data.get('badge_text','')}\n" >> "$ROOT/backend/app.py"
+          printf "    except Exception:\n" >> "$ROOT/backend/app.py"
+          printf "        return {'ok':True,'title':f'{brand} {material} {spec} DIY饰品配件','bullets':['多规格可选','白底主图','适用多场景'],'badge_text':'多规格可选'}\n" >> "$ROOT/backend/app.py"
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-
-app = FastAPI(title="Image Optimizer with GPT")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"], allow_credentials=True,
-    allow_methods=["*"], allow_headers=["*"]
-)
-os.makedirs("outputs", exist_ok=True)
-
-def enhance_image(img, pad=40, background="white", sharpen=1):
-    img = ImageOps.contain(img, (1200 - pad*2, 1200 - pad*2))
-    canvas = Image.new("RGB", (1200, 1200), (255,255,255))
-    canvas.paste(img, ((1200 - img.width)//2, (1200 - img.height)//2))
-    if sharpen > 0:
-        for _ in range(sharpen):
-            canvas = canvas.filter(ImageFilter.SHARPEN)
-    return canvas
-
-@app.post("/process")
-async def process_image(file: UploadFile = File(...)):
-    data = await file.read()
-    img = Image.open(io.BytesIO(data)).convert("RGBA")
-    out = enhance_image(img)
-    path = "outputs/optimized.jpg"
-    out.save(path, "JPEG", quality=92)
-    with open(path, "rb") as f:
-        b64 = base64.b64encode(f.read()).decode("utf-8")
-    return {"ok": True, "preview_b64": b64}
-
-@app.post("/gpt_marketing")
-async def gpt_marketing(brand: str = Form("无品牌"),
-                        material: str = Form("合金"),
-                        spec: str = Form("8mm"),
-                        shape: str = Form("圆形"),
-                        use: str = Form("耳环/项链/手链")):
-    prompt = f"品牌：{brand}；材质：{material}；规格：{spec}；形状：{shape}；适用：{use}。请输出JSON：{{title, bullets[5], badge_text}}。标题≤60字，避免极限词。"
-    try:
-        if not OPENAI_API_KEY:
-            raise ValueError("No key")
-        from openai import OpenAI
-        client = OpenAI(api_key=OPENAI_API_KEY)
-        resp = client.responses.create(model=OPENAI_MODEL, input=prompt)
-        text = resp.output_text.strip()
-        text = re.sub(r"^```(json)?|```$", "", text, flags=re.I|re.M).strip()
-        data = json.loads(text)
-        return {"ok": True, "title": data.get("title",""), "bullets": data.get("bullets",[]), "badge_text": data.get("badge_text","")}
-    except Exception:
-        # fallback mock
-        return {"ok": True, "title": f"{brand} {material} {spec} DIY饰品配件", "bullets": [f"{material}材质，适合{use}", "多规格可选", "白底主图突出主体"], "badge_text": "多规格可选"}
-PY
-
-          ########################################
           # backend/requirements.txt
-          ########################################
-          cat > requirements.txt << 'REQ'
-fastapi
-uvicorn
-pillow
-openai>=1.0.0
-REQ
+          printf "fastapi\nuvicorn\npillow\nopenai>=1.0.0\n" > "$ROOT/backend/requirements.txt"
 
-          ########################################
-          # frontend (Electron)
-          ########################################
-          mkdir frontend && cd frontend
-
-          # package.json
-          cat > package.json << 'PKG'
-{
-  "name": "wechat-image-gpt",
-  "version": "0.3.0",
-  "main": "main.js",
-  "scripts": {
-    "start": "electron .",
-    "dist": "electron-builder -w"
-  },
-  "build": {
-    "appId": "com.example.wechatimagegpt",
-    "productName": "WeChat Image GPT Optimizer",
-    "files": ["main.js","preload.js","renderer.js","index.html"],
-    "win": {
-      "target": "nsis",
-      "artifactName": "WeChat-Image-GPT-Setup-${version}.exe"
-    }
-  },
-  "devDependencies": {
-    "electron": "^29.0.0",
-    "electron-builder": "^24.13.3"
-  },
-  "dependencies": {
-    "sharp": "^0.33.3"
-  }
-}
-PKG
+          # ---------- frontend package.json ----------
+          printf "{\n  \"name\": \"wechat-image-gpt\",\n  \"version\": \"0.3.0\",\n  \"main\": \"main.js\",\n  \"scripts\": {\"start\": \"electron .\", \"dist\": \"electron-builder -w\"},\n  \"build\": {\"appId\": \"com.example.wechatimagegpt\", \"productName\": \"WeChat Image GPT Optimizer\", \"files\": [\"main.js\",\"preload.js\",\"renderer.js\",\"index.html\"], \"win\": {\"target\": \"nsis\",\"artifactName\": \"WeChat-Image-GPT-Setup-${version}.exe\"}},\n  \"devDependencies\": {\"electron\": \"^29.0.0\",\"electron-builder\": \"^24.13.3\"},\n  \"dependencies\": {\"sharp\": \"^0.33.3\",\"node-fetch\": \"^3.3.2\"}\n}\n" > "$ROOT/frontend/package.json"
 
           # main.js
-          cat > main.js << 'JS'
-const { app, BrowserWindow, ipcMain } = require("electron");
-const path = require("path");
-const fs = require("fs");
-const sharp = require("sharp");
-const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
-
-function createWindow() {
-  const win = new BrowserWindow({
-    width: 980,
-    height: 740,
-    webPreferences: {
-      preload: path.join(__dirname, "preload.js")
-    }
-  });
-  win.loadFile("index.html");
-}
-
-app.whenReady().then(() => {
-  createWindow();
-  app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
-  });
-});
-app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
-
-ipcMain.handle("process-image", async (_evt, filePath) => {
-  try {
-    const buf = fs.readFileSync(filePath);
-    const outPath = path.join(process.cwd(), "optimized.jpg");
-    await sharp(buf).resize(1200,1200,{fit:"inside"}).toFile(outPath);
-    const b64 = fs.readFileSync(outPath,"base64");
-    return {ok:true,previewB64:b64,output:outPath};
-  } catch (e) { return {ok:false,error:String(e)}; }
-});
-
-ipcMain.handle("generate-gpt", async (_evt, formData) => {
-  try {
-    const res = await fetch("http://127.0.0.1:8000/gpt_marketing", { method:"POST", body:formData });
-    return await res.json();
-  } catch (e) { return {ok:false,error:String(e)}; }
-});
-JS
+          printf "const {app,BrowserWindow,ipcMain}=require('electron');\nconst path=require('path');\nconst fs=require('fs');\nconst sharp=require('sharp');\nconst fetch=(...a)=>import('node-fetch').then(({default:fetch})=>fetch(...a));\nfunction createWindow(){const w=new BrowserWindow({width:980,height:740,webPreferences:{preload:path.join(__dirname,'preload.js')}});w.loadFile('index.html');}\napp.whenReady().then(()=>{createWindow();app.on('activate',()=>{if(BrowserWindow.getAllWindows().length===0)createWindow();});});\napp.on('window-all-closed',()=>{if(process.platform!=='darwin')app.quit();});\nipcMain.handle('process-image',async(_e,file)=>{try{const buf=fs.readFileSync(file);const out=path.join(process.cwd(),'outputs');if(!fs.existsSync(out))fs.mkdirSync(out,{recursive:true});const outPath=path.join(out,'optimized.jpg');await sharp(buf).rotate().resize(1200,1200,{fit:'inside'}).jpeg({quality:92}).toFile(outPath);const b64=fs.readFileSync(outPath,'base64');return {ok:true,previewB64:b64,output:outPath};}catch(err){return {ok:false,error:String(err)};}});\nipcMain.handle('generate-gpt',async(_e,formData)=>{try{const r=await fetch('http://127.0.0.1:8000/gpt_marketing',{method:'POST',body:formData});return await r.json();}catch(err){return {ok:false,error:String(err)};}});\n" > "$ROOT/frontend/main.js"
 
           # preload.js
-          cat > preload.js << 'PRE'
-const { contextBridge, ipcRenderer } = require("electron");
-contextBridge.exposeInMainWorld("api", {
-  processImage: (filePath) => ipcRenderer.invoke("process-image", filePath),
-  generateGPT: (formData) => ipcRenderer.invoke("generate-gpt", formData)
-});
-PRE
+          printf "const {contextBridge,ipcRenderer}=require('electron');\ncontextBridge.exposeInMainWorld('api',{processImage:(file)=>ipcRenderer.invoke('process-image',file),generateGPT:(form)=>ipcRenderer.invoke('generate-gpt',form)});\n" > "$ROOT/frontend/preload.js"
 
           # renderer.js
-          cat > renderer.js << 'RJS'
-const $ = (s)=>document.querySelector(s);
-let imgPath=null;
-
-window.addEventListener("DOMContentLoaded",()=>{
-  const drop=$("#drop");
-  drop.addEventListener("dragover",e=>{e.preventDefault();drop.classList.add("hover");});
-  drop.addEventListener("dragleave",()=>drop.classList.remove("hover"));
-  drop.addEventListener("drop",e=>{
-    e.preventDefault();drop.classList.remove("hover");
-    const f=e.dataTransfer.files[0];
-    if(f){imgPath=f.path;drop.textContent="已选："+f.name;}
-  });
-  $("#file").addEventListener("change",e=>{
-    const f=e.target.files[0]; if(f){imgPath=f.path;drop.textContent="已选："+f.name;}
-  });
-  $("#opt").addEventListener("click",async()=>{
-    if(!imgPath){alert("请先选择图片");return;}
-    $("#opt").disabled=true;
-    const res=await window.api.processImage(imgPath);
-    if(res.ok){
-      const img=new Image();
-      img.src="data:image/jpeg;base64,"+res.previewB64;
-      $("#preview").innerHTML="";$("#preview").appendChild(img);
-    }else alert(res.error);
-    $("#opt").disabled=false;
-  });
-  $("#gpt").addEventListener("click",async()=>{
-    const fd=new FormData();
-    ["brand","material","spec","shape","use"].forEach(id=>fd.append(id,$("#"+id).value||""));
-    const res=await window.api.generateGPT(fd);
-    if(res.ok){
-      $("#titleOut").textContent=res.title;
-      $("#bullets").innerHTML="";
-      res.bullets.forEach(b=>{
-        const li=document.createElement("li");li.textContent=b;$("#bullets").appendChild(li);
-      });
-      $("#badgeText").value=res.badge_text||"多规格可选";
-    } else alert(res.error);
-  });
-});
-RJS
+          printf "const $=(s)=>document.querySelector(s);let imgPath=null;window.addEventListener('DOMContentLoaded',()=>{const drop=$('#drop');drop.addEventListener('dragover',e=>{e.preventDefault();drop.classList.add('hover');});drop.addEventListener('dragleave',()=>drop.classList.remove('hover'));drop.addEventListener('drop',e=>{e.preventDefault();drop.classList.remove('hover');const f=e.dataTransfer.files[0];if(f){imgPath=f.path;drop.textContent='Selected: '+f.name;}});$('#file').addEventListener('change',e=>{const f=e.target.files[0];if(f){imgPath=f.path;drop.textContent='Selected: '+f.name;}});$('#opt').addEventListener('click',async()=>{if(!imgPath){alert('Pick image first');return;}$('#opt').disabled=true;const r=await window.api.processImage(imgPath);if(r.ok){const img=new Image();img.src='data:image/jpeg;base64,'+r.previewB64;$('#preview').innerHTML='';$('#preview').appendChild(img);}else alert(r.error);$('#opt').disabled=false;});$('#gpt').addEventListener('click',async()=>{const fd=new FormData();['brand','material','spec','shape','use'].forEach(id=>fd.append(id,$('#'+id).value||''));const r=await window.api.generateGPT(fd);if(r.ok){$('#titleOut').textContent=r.title||'';$('#bullets').innerHTML='';(r.bullets||[]).forEach(b=>{const li=document.createElement('li');li.textContent=b;$('#bullets').appendChild(li);});$('#badgeText').value=(r.badge_text||'多规格可选');}else alert(r.error);});});\n" > "$ROOT/frontend/renderer.js"
 
           # index.html
-          cat > index.html << 'HTML'
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>微信图片优化 + GPT文案</title>
-<style>
-body{font-family:system-ui,Arial;margin:0;padding:16px;background:#fafafa}
-h1{margin:0 0 12px 0}
-#drop{border:2px dashed #bbb;border-radius:12px;padding:28px;text-align:center;background:#fff;cursor:pointer}
-#drop.hover{border-color:#111}
-button{padding:8px 14px;margin:4px;border:none;border-radius:8px;background:#111;color:#fff;cursor:pointer}
-input{padding:6px;margin:4px;border:1px solid #ccc;border-radius:6px}
-</style></head>
-<body>
-<h1>微信图片主图优化 + GPT文案</h1>
-<div id="drop">将微信图片拖拽到此处 或 <input id="file" type="file" accept="image/*"></div>
-<button id="opt">优化主图</button>
-<div id="preview"></div>
-<hr>
-<h3>GPT 文案生成</h3>
-<input id="brand" placeholder="品牌(无品牌)">
-<input id="material" placeholder="材质(合金)">
-<input id="spec" placeholder="规格(8mm)">
-<input id="shape" placeholder="形状(圆形)">
-<input id="use" placeholder="适用(耳环/项链)">
-<button id="gpt">生成标题与卖点</button>
-<h4 id="titleOut"></h4>
-<ul id="bullets"></ul>
-<label>角标文字：<input id="badgeText" value="多规格可选"></label>
-<script src="renderer.js"></script>
-</body></html>
-HTML
+          printf "<!doctype html><html lang='zh-CN'><head><meta charset='utf-8'><title>WeChat Image + GPT</title><style>body{font-family:system-ui,Arial;margin:0;padding:16px;background:#fafafa}h1{margin:0 0 12px 0}#drop{border:2px dashed #bbb;border-radius:12px;padding:28px;text-align:center;background:#fff;cursor:pointer}#drop.hover{border-color:#111}button{padding:8px 14px;margin:4px;border:none;border-radius:8px;background:#111;color:#fff;cursor:pointer}input{padding:6px;margin:4px;border:1px solid #ccc;border-radius:6px}</style></head><body><h1>WeChat Image Optimizer + GPT</h1><div id='drop'>Drag image here or <input id='file' type='file' accept='image/*'></div><button id='opt'>Optimize</button><div id='preview'></div><hr><h3>GPT Marketing</h3><input id='brand' placeholder='brand'><input id='material' placeholder='material'><input id='spec' placeholder='spec'><input id='shape' placeholder='shape'><input id='use' placeholder='use'><button id='gpt'>Generate</button><h4 id='titleOut'></h4><ul id='bullets'></ul><label>Badge: <input id='badgeText' value='多规格可选'></label><script src='renderer.js'></script></body></html>\n" > "$ROOT/frontend/index.html"
 
-          cd ../
-          cd ../
-          zip -r wechat_image_gpt_ready.zip "$ROOT"
+          # README
+          printf "# WeChat Image Optimizer + GPT\n\n## Backend\npip install -r backend/requirements.txt\nuvicorn app:app --host 127.0.0.1 --port 8000\n\n## Frontend\ncd frontend\nnpm install\nnpm start\n" > "$ROOT/README.md"
+
+          # zip
+          (cd "$ROOT" && zip -r ../wechat_image_gpt_ready.zip .)
           ls -lh wechat_image_gpt_ready.zip
 
       - name: Release ZIP
         uses: softprops/action-gh-release@v1
         with:
           tag_name: "v${{ github.run_number }}"
-          name: "WeChat Image GPT Optimizer"
-          body: "Electron + FastAPI + GPT marketing integration"
+          name: "WeChat Image GPT Optimizer (ZIP)"
+          body: "Electron + minimal FastAPI backend (with GPT marketing endpoint)."
           files: "wechat_image_gpt_ready.zip"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -13,38 +13,263 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install zip
+      - name: Ensure zip installed
         run: sudo apt-get update && sudo apt-get install -y zip
 
-      - name: Build ZIP (full project)
+      - name: Reconstruct full project (backend + frontend + README)
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
           ROOT="taobao_DIY_win_exe_ready"
-          mkdir -p "$ROOT/backend" "$ROOT/frontend"
+          BACK="$ROOT/backend"
+          FRONT="$ROOT/frontend"
+          mkdir -p "$BACK" "$FRONT"
 
-          # === backend files ===
-          printf "from fastapi import FastAPI\napp=FastAPI()\n@app.get('/')\ndef hi():return {'ok':True}\n" > "$ROOT/backend/app.py"
-          printf "fastapi\nuvicorn\npillow\nopenai>=1.0.0\n" > "$ROOT/backend/requirements.txt"
-          printf "@echo off\r\ncd /d %%~dp0\r\nif not exist .venv (py -m venv .venv)\r\ncall .venv\\Scripts\\activate\r\npip install -r requirements.txt\r\npython app.py\r\n" > "$ROOT/backend/run-backend.bat"
+          ##### backend/app.py #####
+          cat > "$BACK/app.py" << 'PY'
+import os, io, base64, re
+from typing import List
+from fastapi import FastAPI, UploadFile, File, Form
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from PIL import Image, ImageFilter, ImageOps
 
-          # === frontend files ===
-          printf "{\n  \"name\": \"diy-uploader\",\n  \"version\": \"0.2.0\",\n  \"main\": \"main.js\",\n  \"scripts\": {\"start\": \"electron .\"},\n  \"devDependencies\": {\"electron\": \"^29.0.0\"}\n}\n" > "$ROOT/frontend/package.json"
-          printf "const { app, BrowserWindow } = require('electron');\nfunction createWindow(){const w=new BrowserWindow({width:960,height:720,webPreferences:{nodeIntegration:true,contextIsolation:false}});w.loadFile('index.html');}\napp.whenReady().then(createWindow);\n" > "$ROOT/frontend/main.js"
-          printf "<!doctype html><html><body><h1>DIY配件上新助手</h1><p>运行成功。</p></body></html>\n" > "$ROOT/frontend/index.html"
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+OPENAI_MODEL  = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
-          # === readme ===
-          printf "# Windows 可执行版\n\n- 后端运行：backend\\run-backend.bat\n- 前端运行：npm start\n" > "$ROOT/README_win_exe.md"
+app = FastAPI(title="DIY Accessories Uploader Backend")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+os.makedirs("outputs", exist_ok=True)
 
-          # === zip ===
+REPLACE_MAP = {"最":"更","顶级":"高端","完美":"优质","无敌":"出色","100%":"显著"}
+
+def sanitize_title(t: str) -> str:
+    for k,v in REPLACE_MAP.items():
+        t = t.replace(k,v)
+    t = re.sub(r"\s+"," ",t).strip()
+    return t[:60]
+
+def enhance_image(img):
+    bg = Image.new("RGB", img.size, (255,255,255))
+    if img.mode == "RGBA":
+        bg.paste(img, mask=img.split()[3])
+    else:
+        bg.paste(img)
+    return bg.filter(ImageFilter.SHARPEN)
+
+def layout_main(img, headline: str, subline: str):
+    W, H = 1200, 1200
+    canvas = Image.new("RGB", (W, H), (255,255,255))
+    product = ImageOps.contain(img, (900,900))
+    canvas.paste(product, (int((W-product.width)//2), int((H-product.height)//2)))
+    try:
+        from PIL import ImageDraw, ImageFont
+        d = ImageDraw.Draw(canvas)
+        d.rectangle((60,60,420,220), fill=(240,240,240))
+        f = ImageFont.load_default()
+        d.text((80,95), headline[:28], fill=(20,20,20), font=f)
+        d.text((80,145), subline[:32], fill=(60,60,60), font=f)
+    except:
+        pass
+    return canvas
+
+@app.post("/process")
+async def process_image(file: UploadFile = File(...),
+                        brand: str = Form("无品牌"),
+                        material: str = Form("合金"),
+                        spec: str = Form("8mm")):
+    data = await file.read()
+    img = Image.open(io.BytesIO(data)).convert("RGBA")
+    enhanced = enhance_image(img)
+    headline = f"{material} {spec} DIY饰品配件"
+    subline  = "适用于耳环/项链/手链 · 多规格可选"
+    canvas = layout_main(enhanced, headline, subline)
+    out_path = os.path.join("outputs","main_preview.jpg")
+    canvas.save(out_path,"JPEG",quality=92)
+    with open(out_path,"rb") as f:
+        b64 = base64.b64encode(f.read()).decode("utf-8")
+    return JSONResponse({"ok":True,"output":out_path,"preview_b64":b64,"headline":headline,"subline":subline})
+
+@app.post("/generate_title")
+async def generate_title(brand: str = Form("无品牌"),
+                         material: str = Form("合金"),
+                         shape: str = Form("圆形"),
+                         spec: str = Form("8mm"),
+                         use: str = Form("耳环/项链/手链")):
+    prompt = f"品牌：{brand}；材质：{material}；形状：{shape}；规格：{spec}；适用范围：{use}。请输出 5 个淘宝标题（中文、≤60字、规避极限词、突出DIY配件）。"
+    titles: List[str] = []
+    if OPENAI_API_KEY:
+        try:
+            from openai import OpenAI
+            client = OpenAI(api_key=OPENAI_API_KEY)
+            resp = client.responses.create(model=OPENAI_MODEL, input=prompt+"\n格式：每行一个标题，不要编号。")
+            text = resp.output_text.strip()
+            for line in text.splitlines():
+                t = sanitize_title(line)
+                if t and len(t)>=8:
+                    titles.append(t)
+        except:
+            titles = []
+    if not titles:
+        cand = [
+            f"{brand} DIY饰品配件 {material}{shape} {spec} 适用于{use} 手工材料",
+            f"{brand} 首饰配件 {material} {spec} {shape} 多规格可选 DIY配件",
+            f"{brand} {material} {shape} {spec} 手工制作配件 适用于{use}",
+            f"{brand} {material}{shape} {spec} DIY配件 首饰/发饰通用",
+            f"{brand} {material} {spec} {shape} 配件 适用于{use}"
+        ]
+        titles = [sanitize_title(x) for x in cand]
+    return JSONResponse({"ok":True, "titles":titles[:5]})
+
+@app.get("/health")
+async def health():
+    return {"ok":True}
+PY
+
+          ##### backend/requirements.txt #####
+          cat > "$BACK/requirements.txt" << 'REQ'
+fastapi
+uvicorn
+pillow
+openai>=1.0.0
+REQ
+
+          ##### backend/run-backend.bat #####
+          cat > "$BACK/run-backend.bat" << 'BAT'
+@echo off
+cd /d %~dp0
+if not exist .venv (
+  py -m venv .venv
+)
+call .venv\Scripts\activate
+pip install -r requirements.txt
+set OPENAI_MODEL=gpt-4o-mini
+python app.py
+BAT
+
+          ##### frontend/package.json #####
+          cat > "$FRONT/package.json" << 'PKG'
+{
+  "name": "diy-uploader",
+  "version": "0.2.0",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder -w"
+  },
+  "build": {
+    "appId": "com.example.diyuploader",
+    "productName": "DIY Uploader",
+    "win": {
+      "target": "nsis",
+      "artifactName": "DIY-Uploader-Setup-${version}.exe"
+    },
+    "files": ["main.js","index.html","renderer.js","preload.js","assets/**/*"]
+  },
+  "devDependencies": {
+    "electron": "^29.0.0",
+    "electron-builder": "^24.13.3"
+  }
+}
+PKG
+
+          ##### frontend/main.js #####
+          cat > "$FRONT/main.js" << 'JS'
+const { app, BrowserWindow } = require("electron");
+function createWindow () {
+  const win = new BrowserWindow({ width: 960, height: 740, webPreferences: { nodeIntegration: true, contextIsolation: false } });
+  win.loadFile("index.html");
+}
+app.whenReady().then(() => { createWindow(); app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); }); });
+app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
+JS
+
+          ##### frontend/index.html #####
+          cat > "$FRONT/index.html" << 'HTML'
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+<title>DIY配件 - 上新助手（Win EXE 版）</title>
+<style>
+body{font-family:system-ui,Arial;margin:0;padding:20px;}
+h1{margin:0 0 12px 0;}
+.row{display:flex;gap:8px;margin:8px 0;}
+input{padding:8px;border:1px solid #ccc;border-radius:8px;flex:1;}
+button{padding:10px 14px;border:none;border-radius:8px;background:#111;color:#fff;cursor:pointer;}
+#drop{border:2px dashed #bbb;border-radius:12px;padding:40px;text-align:center;margin:12px 0;}
+img{max-width:100%;border:1px solid #eee;border-radius:8px;margin-top:12px;}
+</style></head>
+<body>
+<h1>DIY配件 - 上新助手</h1>
+<div class="row"><input id="brand" placeholder="品牌（无品牌）"><input id="material" placeholder="材质（合金）"><input id="spec" placeholder="规格（8mm）"></div>
+<div class="row"><input id="shape" placeholder="形状（圆形/方形/心形）"><input id="use" placeholder="适用范围（耳环/项链/手链）"></div>
+<div id="drop">将图片拖拽到这里 或 点击选择</div>
+<input type="file" id="file" style="display:none" accept="image/*">
+<div class="row"><button id="btnProcess">生成主图预览</button><button id="btnTitle">AI 生成标题</button></div>
+<div id="result"></div>
+<script>
+const API_BASE = "http://127.0.0.1:8000";
+const drop = document.getElementById("drop"); const fileInput = document.getElementById("file"); let fileBlob=null;
+drop.addEventListener("click",()=>fileInput.click());
+drop.addEventListener("dragover",e=>{e.preventDefault(); drop.style.borderColor="#111";});
+drop.addEventListener("dragleave",e=>{drop.style.borderColor="#bbb";});
+drop.addEventListener("drop",e=>{e.preventDefault(); drop.style.borderColor="#bbb"; fileBlob=e.dataTransfer.files[0]; drop.textContent="已选择："+fileBlob.name;});
+fileInput.addEventListener("change",e=>{fileBlob=e.target.files[0]; drop.textContent="已选择："+fileBlob.name;});
+async function postForm(url,fd){ const r=await fetch(url,{method:"POST",body:fd}); return await r.json(); }
+document.getElementById("btnProcess").addEventListener("click",async ()=>{
+  if(!fileBlob){ alert("请先选择图片"); return; }
+  const fd=new FormData();
+  fd.append("file",fileBlob);
+  fd.append("brand",document.getElementById("brand").value||"无品牌");
+  fd.append("material",document.getElementById("material").value||"合金");
+  fd.append("spec",document.getElementById("spec").value||"8mm");
+  const data=await postForm(API_BASE+"/process",fd);
+  if(data.ok){ const img=new Image(); img.src="data:image/jpeg;base64,"+data.preview_b64; document.getElementById("result").innerHTML="<h3>主图预览</h3>"; document.getElementById("result").appendChild(img); }
+  else alert("处理失败");
+});
+document.getElementById("btnTitle").addEventListener("click",async ()=>{
+  const fd=new FormData();
+  fd.append("brand",document.getElementById("brand").value||"无品牌");
+  fd.append("material",document.getElementById("material").value||"合金");
+  fd.append("spec",document.getElementById("spec").value||"8mm");
+  fd.append("shape",document.getElementById("shape").value||"圆形");
+  fd.append("use",document.getElementById("use").value||"耳环/项链/手链");
+  const data=await postForm(API_BASE+"/generate_title",fd);
+  if(data.ok){
+    const ul=document.createElement("ul");
+    data.titles.forEach(t=>{const li=document.createElement("li"); li.textContent=t; ul.appendChild(li);});
+    const box=document.createElement("div"); box.innerHTML="<h3>AI 标题候选</h3>"; box.appendChild(ul);
+    document.getElementById("result").prepend(box);
+  } else alert("生成标题失败");
+});
+</script>
+</body></html>
+HTML
+
+          ##### frontend placeholders #####
+          : > "$FRONT/renderer.js"
+          : > "$FRONT/preload.js"
+
+          ##### README #####
+          cat > "$ROOT/README_win_exe.md" << 'MD'
+# Windows Executable (with GPT title & image enhances)
+## Backend
+- Double click: `backend\run-backend.bat`
+- Optional: `setx OPENAI_API_KEY "your_key"`
+## Frontend
+- In `frontend`: `npm install` then `npm start`
+## Build .exe
+- In `frontend`: `npm run dist`
+- Output: `frontend\dist\DIY-Uploader-Setup-0.2.0.exe`
+MD
+
+          ##### Create ZIP #####
           (cd "$ROOT" && zip -r "../taobao_DIY_win_exe_ready_20251108_081529.zip" .)
 
-      - name: Release ZIP
+      - name: Release with unique tag
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: "v${{ github.run_number }}"
+          tag_name: "v${{ github.run_number }}-${{ github.run_id }}"
           name: "Ready-made ZIP (Full Project)"
-          body: "自动生成完整工程包（Win EXE + GPT + 图片优化）"
+          body: "Auto-generated full project (Win EXE + GPT + Image optimize)"
           files: "taobao_DIY_win_exe_ready_20251108_081529.zip"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

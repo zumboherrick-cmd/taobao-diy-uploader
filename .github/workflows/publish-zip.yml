@@ -1,4 +1,4 @@
-name: Publish ready-made ZIP (Full Project)
+name: Build WeChat Image Optimizer + GPT (Full Project)
 
 on:
   workflow_dispatch:
@@ -13,26 +13,24 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Ensure zip is installed
+      - name: Install zip
         run: |
           sudo apt-get update
           sudo apt-get install -y zip
 
-      - name: Reconstruct full project and build ZIP
+      - name: Build full project and ZIP
         shell: bash
         run: |
-          set -euo pipefail
+          set -e
+          ROOT="wechat_image_gpt"
+          mkdir -p "$ROOT"
+          cd "$ROOT"
 
-          ROOT="taobao_DIY_win_exe_ready"
-          BACK="$ROOT/backend"
-          FRONT="$ROOT/frontend"
-          mkdir -p "$BACK" "$FRONT"
-
-          ############################
+          ########################################
           # backend/app.py
-          ############################
-          cat > "$BACK/app.py" << 'PY'
-import os, io, base64, re
+          ########################################
+          cat > app.py << 'PY'
+import os, io, base64, re, json
 from typing import List
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -40,9 +38,9 @@ from fastapi.responses import JSONResponse
 from PIL import Image, ImageFilter, ImageOps
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
-OPENAI_MODEL  = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
-app = FastAPI(title="DIY Accessories Uploader Backend")
+app = FastAPI(title="Image Optimizer with GPT")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], allow_credentials=True,
@@ -50,160 +48,111 @@ app.add_middleware(
 )
 os.makedirs("outputs", exist_ok=True)
 
-REPLACE_MAP = {"最":"更","顶级":"高端","完美":"优质","无敌":"出色","100%":"显著"}
-
-def sanitize_title(t: str) -> str:
-    for k,v in REPLACE_MAP.items():
-        t = t.replace(k,v)
-    t = re.sub(r"\s+"," ",t).strip()
-    return t[:60]
-
-def enhance_image(img):
-    bg = Image.new("RGB", img.size, (255,255,255))
-    if img.mode == "RGBA":
-        bg.paste(img, mask=img.split()[3])
-    else:
-        bg.paste(img)
-    return bg.filter(ImageFilter.SHARPEN)
-
-def layout_main(img, headline: str, subline: str):
-    W, H = 1200, 1200
-    canvas = Image.new("RGB", (W, H), (255,255,255))
-    product = ImageOps.contain(img, (900,900))
-    canvas.paste(product, (int((W-product.width)//2), int((H-product.height)//2)))
-    try:
-        from PIL import ImageDraw, ImageFont
-        d = ImageDraw.Draw(canvas)
-        d.rectangle((60,60,420,220), fill=(240,240,240))
-        f = ImageFont.load_default()
-        d.text((80,95), headline[:28], fill=(20,20,20), font=f)
-        d.text((80,145), subline[:32], fill=(60,60,60), font=f)
-    except:
-        pass
+def enhance_image(img, pad=40, background="white", sharpen=1):
+    img = ImageOps.contain(img, (1200 - pad*2, 1200 - pad*2))
+    canvas = Image.new("RGB", (1200, 1200), (255,255,255))
+    canvas.paste(img, ((1200 - img.width)//2, (1200 - img.height)//2))
+    if sharpen > 0:
+        for _ in range(sharpen):
+            canvas = canvas.filter(ImageFilter.SHARPEN)
     return canvas
 
 @app.post("/process")
-async def process_image(file: UploadFile = File(...),
-                        brand: str = Form("无品牌"),
-                        material: str = Form("合金"),
-                        spec: str = Form("8mm")):
+async def process_image(file: UploadFile = File(...)):
     data = await file.read()
-    from PIL import Image  # local import to ensure pillow is available
     img = Image.open(io.BytesIO(data)).convert("RGBA")
-    enhanced = enhance_image(img)
-    headline = f"{material} {spec} DIY饰品配件"
-    subline  = "适用于耳环/项链/手链 · 多规格可选"
-    canvas = layout_main(enhanced, headline, subline)
-    out_path = os.path.join("outputs","main_preview.jpg")
-    canvas.save(out_path,"JPEG",quality=92)
-    with open(out_path,"rb") as f:
+    out = enhance_image(img)
+    path = "outputs/optimized.jpg"
+    out.save(path, "JPEG", quality=92)
+    with open(path, "rb") as f:
         b64 = base64.b64encode(f.read()).decode("utf-8")
-    return JSONResponse({"ok":True,"output":out_path,"preview_b64":b64,"headline":headline,"subline":subline})
+    return {"ok": True, "preview_b64": b64}
 
-@app.post("/generate_title")
-async def generate_title(brand: str = Form("无品牌"),
-                         material: str = Form("合金"),
-                         shape: str = Form("圆形"),
-                         spec: str = Form("8mm"),
-                         use: str = Form("耳环/项链/手链")):
-    prompt = f"品牌：{brand}；材质：{material}；形状：{shape}；规格：{spec}；适用范围：{use}。请输出 5 个淘宝标题（中文、≤60字、规避极限词、突出DIY配件）。"
-    titles: List[str] = []
-    if OPENAI_API_KEY:
-        try:
-            from openai import OpenAI
-            client = OpenAI(api_key=OPENAI_API_KEY)
-            resp = client.responses.create(
-                model=OPENAI_MODEL,
-                input=prompt + "\n格式：每行一个标题，不要编号。"
-            )
-            text = resp.output_text.strip()
-            for line in text.splitlines():
-                t = sanitize_title(line)
-                if t and len(t) >= 8:
-                    titles.append(t)
-        except Exception:
-            titles = []
-    if not titles:
-        cand = [
-            f"{brand} DIY饰品配件 {material}{shape} {spec} 适用于{use} 手工材料",
-            f"{brand} 首饰配件 {material} {spec} {shape} 多规格可选 DIY配件",
-            f"{brand} {material} {shape} {spec} 手工制作配件 适用于{use}",
-            f"{brand} {material}{shape} {spec} DIY配件 首饰/发饰通用",
-            f"{brand} {material} {spec} {shape} 配件 适用于{use}"
-        ]
-        titles = [sanitize_title(x) for x in cand]
-    return JSONResponse({"ok": True, "titles": titles[:5]})
-
-@app.get("/health")
-async def health():
-    return {"ok": True}
+@app.post("/gpt_marketing")
+async def gpt_marketing(brand: str = Form("无品牌"),
+                        material: str = Form("合金"),
+                        spec: str = Form("8mm"),
+                        shape: str = Form("圆形"),
+                        use: str = Form("耳环/项链/手链")):
+    prompt = f"品牌：{brand}；材质：{material}；规格：{spec}；形状：{shape}；适用：{use}。请输出JSON：{{title, bullets[5], badge_text}}。标题≤60字，避免极限词。"
+    try:
+        if not OPENAI_API_KEY:
+            raise ValueError("No key")
+        from openai import OpenAI
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        resp = client.responses.create(model=OPENAI_MODEL, input=prompt)
+        text = resp.output_text.strip()
+        text = re.sub(r"^```(json)?|```$", "", text, flags=re.I|re.M).strip()
+        data = json.loads(text)
+        return {"ok": True, "title": data.get("title",""), "bullets": data.get("bullets",[]), "badge_text": data.get("badge_text","")}
+    except Exception:
+        # fallback mock
+        return {"ok": True, "title": f"{brand} {material} {spec} DIY饰品配件", "bullets": [f"{material}材质，适合{use}", "多规格可选", "白底主图突出主体"], "badge_text": "多规格可选"}
 PY
 
-          ############################
+          ########################################
           # backend/requirements.txt
-          ############################
-          cat > "$BACK/requirements.txt" << 'REQ'
+          ########################################
+          cat > requirements.txt << 'REQ'
 fastapi
 uvicorn
 pillow
 openai>=1.0.0
 REQ
 
-          ############################
-          # backend/run-backend.bat
-          ############################
-          cat > "$BACK/run-backend.bat" << 'BAT'
-@echo off
-cd /d %~dp0
-if not exist .venv (
-  py -m venv .venv
-)
-call .venv\Scripts\activate
-pip install -r requirements.txt
-set OPENAI_MODEL=gpt-4o-mini
-python app.py
-BAT
+          ########################################
+          # frontend (Electron)
+          ########################################
+          mkdir frontend && cd frontend
 
-          ############################
-          # frontend/package.json
-          ############################
-          cat > "$FRONT/package.json" << 'PKG'
+          # package.json
+          cat > package.json << 'PKG'
 {
-  "name": "diy-uploader",
-  "version": "0.2.0",
+  "name": "wechat-image-gpt",
+  "version": "0.3.0",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
     "dist": "electron-builder -w"
   },
   "build": {
-    "appId": "com.example.diyuploader",
-    "productName": "DIY Uploader",
+    "appId": "com.example.wechatimagegpt",
+    "productName": "WeChat Image GPT Optimizer",
+    "files": ["main.js","preload.js","renderer.js","index.html"],
     "win": {
       "target": "nsis",
-      "artifactName": "DIY-Uploader-Setup-${version}.exe"
-    },
-    "files": ["main.js","index.html","renderer.js","preload.js","assets/**/*"]
+      "artifactName": "WeChat-Image-GPT-Setup-${version}.exe"
+    }
   },
   "devDependencies": {
     "electron": "^29.0.0",
     "electron-builder": "^24.13.3"
+  },
+  "dependencies": {
+    "sharp": "^0.33.3"
   }
 }
 PKG
 
-          ############################
-          # frontend/main.js
-          ############################
-          cat > "$FRONT/main.js" << 'JS'
-const { app, BrowserWindow } = require("electron");
-function createWindow () {
+          # main.js
+          cat > main.js << 'JS'
+const { app, BrowserWindow, ipcMain } = require("electron");
+const path = require("path");
+const fs = require("fs");
+const sharp = require("sharp");
+const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
+
+function createWindow() {
   const win = new BrowserWindow({
-    width: 960, height: 740,
-    webPreferences: { nodeIntegration: true, contextIsolation: false }
+    width: 980,
+    height: 740,
+    webPreferences: {
+      preload: path.join(__dirname, "preload.js")
+    }
   });
   win.loadFile("index.html");
 }
+
 app.whenReady().then(() => {
   createWindow();
   app.on("activate", () => {
@@ -211,103 +160,120 @@ app.whenReady().then(() => {
   });
 });
 app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
+
+ipcMain.handle("process-image", async (_evt, filePath) => {
+  try {
+    const buf = fs.readFileSync(filePath);
+    const outPath = path.join(process.cwd(), "optimized.jpg");
+    await sharp(buf).resize(1200,1200,{fit:"inside"}).toFile(outPath);
+    const b64 = fs.readFileSync(outPath,"base64");
+    return {ok:true,previewB64:b64,output:outPath};
+  } catch (e) { return {ok:false,error:String(e)}; }
+});
+
+ipcMain.handle("generate-gpt", async (_evt, formData) => {
+  try {
+    const res = await fetch("http://127.0.0.1:8000/gpt_marketing", { method:"POST", body:formData });
+    return await res.json();
+  } catch (e) { return {ok:false,error:String(e)}; }
+});
 JS
 
-          ############################
-          # frontend/index.html
-          ############################
-          cat > "$FRONT/index.html" << 'HTML'
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
-<title>DIY配件 - 上新助手（Win EXE 版）</title>
+          # preload.js
+          cat > preload.js << 'PRE'
+const { contextBridge, ipcRenderer } = require("electron");
+contextBridge.exposeInMainWorld("api", {
+  processImage: (filePath) => ipcRenderer.invoke("process-image", filePath),
+  generateGPT: (formData) => ipcRenderer.invoke("generate-gpt", formData)
+});
+PRE
+
+          # renderer.js
+          cat > renderer.js << 'RJS'
+const $ = (s)=>document.querySelector(s);
+let imgPath=null;
+
+window.addEventListener("DOMContentLoaded",()=>{
+  const drop=$("#drop");
+  drop.addEventListener("dragover",e=>{e.preventDefault();drop.classList.add("hover");});
+  drop.addEventListener("dragleave",()=>drop.classList.remove("hover"));
+  drop.addEventListener("drop",e=>{
+    e.preventDefault();drop.classList.remove("hover");
+    const f=e.dataTransfer.files[0];
+    if(f){imgPath=f.path;drop.textContent="已选："+f.name;}
+  });
+  $("#file").addEventListener("change",e=>{
+    const f=e.target.files[0]; if(f){imgPath=f.path;drop.textContent="已选："+f.name;}
+  });
+  $("#opt").addEventListener("click",async()=>{
+    if(!imgPath){alert("请先选择图片");return;}
+    $("#opt").disabled=true;
+    const res=await window.api.processImage(imgPath);
+    if(res.ok){
+      const img=new Image();
+      img.src="data:image/jpeg;base64,"+res.previewB64;
+      $("#preview").innerHTML="";$("#preview").appendChild(img);
+    }else alert(res.error);
+    $("#opt").disabled=false;
+  });
+  $("#gpt").addEventListener("click",async()=>{
+    const fd=new FormData();
+    ["brand","material","spec","shape","use"].forEach(id=>fd.append(id,$("#"+id).value||""));
+    const res=await window.api.generateGPT(fd);
+    if(res.ok){
+      $("#titleOut").textContent=res.title;
+      $("#bullets").innerHTML="";
+      res.bullets.forEach(b=>{
+        const li=document.createElement("li");li.textContent=b;$("#bullets").appendChild(li);
+      });
+      $("#badgeText").value=res.badge_text||"多规格可选";
+    } else alert(res.error);
+  });
+});
+RJS
+
+          # index.html
+          cat > index.html << 'HTML'
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>微信图片优化 + GPT文案</title>
 <style>
-body{font-family:system-ui,Arial;margin:0;padding:20px;}
-h1{margin:0 0 12px 0;}
-.row{display:flex;gap:8px;margin:8px 0;}
-input{padding:8px;border:1px solid #ccc;border-radius:8px;flex:1;}
-button{padding:10px 14px;border:none;border-radius:8px;background:#111;color:#fff;cursor:pointer;}
-#drop{border:2px dashed #bbb;border-radius:12px;padding:40px;text-align:center;margin:12px 0;}
-img{max-width:100%;border:1px solid #eee;border-radius:8px;margin-top:12px;}
+body{font-family:system-ui,Arial;margin:0;padding:16px;background:#fafafa}
+h1{margin:0 0 12px 0}
+#drop{border:2px dashed #bbb;border-radius:12px;padding:28px;text-align:center;background:#fff;cursor:pointer}
+#drop.hover{border-color:#111}
+button{padding:8px 14px;margin:4px;border:none;border-radius:8px;background:#111;color:#fff;cursor:pointer}
+input{padding:6px;margin:4px;border:1px solid #ccc;border-radius:6px}
 </style></head>
 <body>
-<h1>DIY配件 - 上新助手</h1>
-<div class="row"><input id="brand" placeholder="品牌（无品牌）"><input id="material" placeholder="材质（合金）"><input id="spec" placeholder="规格（8mm）"></div>
-<div class="row"><input id="shape" placeholder="形状（圆形/方形/心形）"><input id="use" placeholder="适用范围（耳环/项链/手链）"></div>
-<div id="drop">将图片拖拽到这里 或 点击选择</div>
-<input type="file" id="file" style="display:none" accept="image/*">
-<div class="row"><button id="btnProcess">生成主图预览</button><button id="btnTitle">AI 生成标题</button></div>
-<div id="result"></div>
-<script>
-const API_BASE = "http://127.0.0.1:8000";
-const drop = document.getElementById("drop"); const fileInput = document.getElementById("file"); let fileBlob=null;
-drop.addEventListener("click",()=>fileInput.click());
-drop.addEventListener("dragover",e=>{e.preventDefault(); drop.style.borderColor="#111";});
-drop.addEventListener("dragleave",()=>{drop.style.borderColor="#bbb";});
-drop.addEventListener("drop",e=>{e.preventDefault(); drop.style.borderColor="#bbb"; fileBlob=e.dataTransfer.files[0]; drop.textContent="已选择："+fileBlob.name;});
-fileInput.addEventListener("change",e=>{fileBlob=e.target.files[0]; drop.textContent="已选择："+fileBlob.name;});
-async function postForm(url,fd){ const r=await fetch(url,{method:"POST",body:fd}); return await r.json(); }
-document.getElementById("btnProcess").addEventListener("click",async ()=>{
-  if(!fileBlob){ alert("请先选择图片"); return; }
-  const fd=new FormData();
-  fd.append("file",fileBlob);
-  fd.append("brand",document.getElementById("brand").value||"无品牌");
-  fd.append("material",document.getElementById("material").value||"合金");
-  fd.append("spec",document.getElementById("spec").value||"8mm");
-  const data=await postForm(API_BASE+"/process",fd);
-  if(data.ok){ const img=new Image(); img.src="data:image/jpeg;base64,"+data.preview_b64; document.getElementById("result").innerHTML="<h3>主图预览</h3>"; document.getElementById("result").appendChild(img); }
-  else alert("处理失败");
-});
-document.getElementById("btnTitle").addEventListener("click",async ()=>{
-  const fd=new FormData();
-  fd.append("brand",document.getElementById("brand").value||"无品牌");
-  fd.append("material",document.getElementById("material").value||"合金");
-  fd.append("spec",document.getElementById("spec").value||"8mm");
-  fd.append("shape",document.getElementById("shape").value||"圆形");
-  fd.append("use",document.getElementById("use").value||"耳环/项链/手链");
-  const data=await postForm(API_BASE+"/generate_title",fd);
-  if(data.ok){
-    const ul=document.createElement("ul");
-    data.titles.forEach(t=>{const li=document.createElement("li"); li.textContent=t; ul.appendChild(li);});
-    const box=document.createElement("div"); box.innerHTML="<h3>AI 标题候选</h3>"; box.appendChild(ul);
-    document.getElementById("result").prepend(box);
-  } else alert("生成标题失败");
-});
-</script>
+<h1>微信图片主图优化 + GPT文案</h1>
+<div id="drop">将微信图片拖拽到此处 或 <input id="file" type="file" accept="image/*"></div>
+<button id="opt">优化主图</button>
+<div id="preview"></div>
+<hr>
+<h3>GPT 文案生成</h3>
+<input id="brand" placeholder="品牌(无品牌)">
+<input id="material" placeholder="材质(合金)">
+<input id="spec" placeholder="规格(8mm)">
+<input id="shape" placeholder="形状(圆形)">
+<input id="use" placeholder="适用(耳环/项链)">
+<button id="gpt">生成标题与卖点</button>
+<h4 id="titleOut"></h4>
+<ul id="bullets"></ul>
+<label>角标文字：<input id="badgeText" value="多规格可选"></label>
+<script src="renderer.js"></script>
 </body></html>
 HTML
 
-          ############################
-          # frontend placeholders
-          ############################
-          : > "$FRONT/renderer.js"
-          : > "$FRONT/preload.js"
+          cd ../
+          cd ../
+          zip -r wechat_image_gpt_ready.zip "$ROOT"
+          ls -lh wechat_image_gpt_ready.zip
 
-          ############################
-          # README
-          ############################
-          cat > "$ROOT/README_win_exe.md" << 'MD'
-# Windows Executable (with GPT title & image enhancement)
-## Backend
-- Double click: `backend\run-backend.bat`
-- Optional: `setx OPENAI_API_KEY "your_key"`
-## Frontend
-- In `frontend`: `npm install` then `npm start`
-## Build .exe
-- In `frontend`: `npm run dist`
-- Output: `frontend\dist\DIY-Uploader-Setup-0.2.0.exe`
-MD
-
-          ############################
-          # Build ZIP
-          ############################
-          (cd "$ROOT" && zip -r "../taobao_DIY_win_exe_ready_20251108_081529.zip" .)
-          ls -lh "taobao_DIY_win_exe_ready_20251108_081529.zip"
-
-      - name: Release ZIP with unique tag
+      - name: Release ZIP
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: "v${{ github.run_number }}-${{ github.run_id }}"
-          name: "Ready-made ZIP (Full Project)"
-          body: "Auto-generated full project (Win EXE + GPT + Image optimize)"
-          files: "taobao_DIY_win_exe_ready_20251108_081529.zip"
+          tag_name: "v${{ github.run_number }}"
+          name: "WeChat Image GPT Optimizer"
+          body: "Electron + FastAPI + GPT marketing integration"
+          files: "wechat_image_gpt_ready.zip"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

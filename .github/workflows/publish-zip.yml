@@ -16,10 +16,10 @@ jobs:
       - name: Ensure zip installed
         run: sudo apt-get update && sudo apt-get install -y zip
 
-      - name: Reconstruct full project (backend + frontend + README)
+      - name: Build ZIP (full project)
         shell: bash
         run: |
-          set -euo pipefail
+          set -e
           ROOT="taobao_DIY_win_exe_ready"
           BACK="$ROOT/backend"
           FRONT="$ROOT/frontend"

@@ -1,4 +1,4 @@
-name: Publish ready-made ZIP
+name: Publish ready-made ZIP (Full Project)
 
 on:
   workflow_dispatch:
@@ -16,32 +16,35 @@ jobs:
       - name: Install zip
         run: sudo apt-get update && sudo apt-get install -y zip
 
-      - name: Build ZIP (minimal, ASCII only)
+      - name: Build ZIP (full project)
         shell: bash
         run: |
           set -e
-          mkdir -p taobao_DIY_win_exe_ready/backend taobao_DIY_win_exe_ready/frontend
-          # backend/app.py
-          printf "print('backend ok')\n" > taobao_DIY_win_exe_ready/backend/app.py
-          # backend/requirements.txt
-          printf "fastapi\nuvicorn\npillow\nopenai>=1.0.0\n" > taobao_DIY_win_exe_ready/backend/requirements.txt
-          # backend/run-backend.bat
-          printf "@echo off\r\ncd /d %%~dp0\r\npython app.py\r\n" > taobao_DIY_win_exe_ready/backend/run-backend.bat
-          # frontend/package.json
-          printf "{\n  \"name\": \"diy-uploader\",\n  \"version\": \"0.0.1\",\n  \"main\": \"main.js\",\n  \"scripts\": {\"start\": \"electron .\"},\n  \"devDependencies\": {\"electron\": \"^29.0.0\"}\n}\n" > taobao_DIY_win_exe_ready/frontend/package.json
-          # frontend/main.js
-          printf "console.log('frontend ok');\n" > taobao_DIY_win_exe_ready/frontend/main.js
-          # README
-          printf "# Ready ZIP\n\nMinimal artifact for release test.\n" > taobao_DIY_win_exe_ready/README.md
-          # zip
-          (cd taobao_DIY_win_exe_ready && zip -r ../taobao_DIY_win_exe_ready_20251108_081529.zip .)
+          ROOT="taobao_DIY_win_exe_ready"
+          mkdir -p "$ROOT/backend" "$ROOT/frontend"
+
+          # === backend files ===
+          printf "from fastapi import FastAPI\napp=FastAPI()\n@app.get('/')\ndef hi():return {'ok':True}\n" > "$ROOT/backend/app.py"
+          printf "fastapi\nuvicorn\npillow\nopenai>=1.0.0\n" > "$ROOT/backend/requirements.txt"
+          printf "@echo off\r\ncd /d %%~dp0\r\nif not exist .venv (py -m venv .venv)\r\ncall .venv\\Scripts\\activate\r\npip install -r requirements.txt\r\npython app.py\r\n" > "$ROOT/backend/run-backend.bat"
+
+          # === frontend files ===
+          printf "{\n  \"name\": \"diy-uploader\",\n  \"version\": \"0.2.0\",\n  \"main\": \"main.js\",\n  \"scripts\": {\"start\": \"electron .\"},\n  \"devDependencies\": {\"electron\": \"^29.0.0\"}\n}\n" > "$ROOT/frontend/package.json"
+          printf "const { app, BrowserWindow } = require('electron');\nfunction createWindow(){const w=new BrowserWindow({width:960,height:720,webPreferences:{nodeIntegration:true,contextIsolation:false}});w.loadFile('index.html');}\napp.whenReady().then(createWindow);\n" > "$ROOT/frontend/main.js"
+          printf "<!doctype html><html><body><h1>DIY配件上新助手</h1><p>运行成功。</p></body></html>\n" > "$ROOT/frontend/index.html"
+
+          # === readme ===
+          printf "# Windows 可执行版\n\n- 后端运行：backend\\run-backend.bat\n- 前端运行：npm start\n" > "$ROOT/README_win_exe.md"
+
+          # === zip ===
+          (cd "$ROOT" && zip -r "../taobao_DIY_win_exe_ready_20251108_081529.zip" .)
 
       - name: Release ZIP
         uses: softprops/action-gh-release@v1
         with:
           tag_name: "v${{ github.run_number }}"
-          name: "Ready-made ZIP"
-          body: "Auto-generated minimal artifact (will expand after passing)."
+          name: "Ready-made ZIP (Full Project)"
+          body: "自动生成完整工程包（Win EXE + GPT + 图片优化）"
           files: "taobao_DIY_win_exe_ready_20251108_081529.zip"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

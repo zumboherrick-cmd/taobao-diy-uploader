@@ -13,19 +13,24 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Ensure zip installed
-        run: sudo apt-get update && sudo apt-get install -y zip
+      - name: Ensure zip is installed
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zip
 
-      - name: Build ZIP (full project)
+      - name: Reconstruct full project and build ZIP
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
+
           ROOT="taobao_DIY_win_exe_ready"
           BACK="$ROOT/backend"
           FRONT="$ROOT/frontend"
           mkdir -p "$BACK" "$FRONT"
 
-          ##### backend/app.py #####
+          ############################
+          # backend/app.py
+          ############################
           cat > "$BACK/app.py" << 'PY'
 import os, io, base64, re
 from typing import List
@@ -38,7 +43,11 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL  = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 app = FastAPI(title="DIY Accessories Uploader Backend")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], allow_credentials=True,
+    allow_methods=["*"], allow_headers=["*"]
+)
 os.makedirs("outputs", exist_ok=True)
 
 REPLACE_MAP = {"最":"更","顶级":"高端","完美":"优质","无敌":"出色","100%":"显著"}
@@ -79,6 +88,7 @@ async def process_image(file: UploadFile = File(...),
                         material: str = Form("合金"),
                         spec: str = Form("8mm")):
     data = await file.read()
+    from PIL import Image  # local import to ensure pillow is available
     img = Image.open(io.BytesIO(data)).convert("RGBA")
     enhanced = enhance_image(img)
     headline = f"{material} {spec} DIY饰品配件"
@@ -102,13 +112,16 @@ async def generate_title(brand: str = Form("无品牌"),
         try:
             from openai import OpenAI
             client = OpenAI(api_key=OPENAI_API_KEY)
-            resp = client.responses.create(model=OPENAI_MODEL, input=prompt+"\n格式：每行一个标题，不要编号。")
+            resp = client.responses.create(
+                model=OPENAI_MODEL,
+                input=prompt + "\n格式：每行一个标题，不要编号。"
+            )
             text = resp.output_text.strip()
             for line in text.splitlines():
                 t = sanitize_title(line)
-                if t and len(t)>=8:
+                if t and len(t) >= 8:
                     titles.append(t)
-        except:
+        except Exception:
             titles = []
     if not titles:
         cand = [
@@ -119,14 +132,16 @@ async def generate_title(brand: str = Form("无品牌"),
             f"{brand} {material} {spec} {shape} 配件 适用于{use}"
         ]
         titles = [sanitize_title(x) for x in cand]
-    return JSONResponse({"ok":True, "titles":titles[:5]})
+    return JSONResponse({"ok": True, "titles": titles[:5]})
 
 @app.get("/health")
 async def health():
-    return {"ok":True}
+    return {"ok": True}
 PY
 
-          ##### backend/requirements.txt #####
+          ############################
+          # backend/requirements.txt
+          ############################
           cat > "$BACK/requirements.txt" << 'REQ'
 fastapi
 uvicorn
@@ -134,7 +149,9 @@ pillow
 openai>=1.0.0
 REQ
 
-          ##### backend/run-backend.bat #####
+          ############################
+          # backend/run-backend.bat
+          ############################
           cat > "$BACK/run-backend.bat" << 'BAT'
 @echo off
 cd /d %~dp0
@@ -147,7 +164,9 @@ set OPENAI_MODEL=gpt-4o-mini
 python app.py
 BAT
 
-          ##### frontend/package.json #####
+          ############################
+          # frontend/package.json
+          ############################
           cat > "$FRONT/package.json" << 'PKG'
 {
   "name": "diy-uploader",
@@ -173,18 +192,30 @@ BAT
 }
 PKG
 
-          ##### frontend/main.js #####
+          ############################
+          # frontend/main.js
+          ############################
           cat > "$FRONT/main.js" << 'JS'
 const { app, BrowserWindow } = require("electron");
 function createWindow () {
-  const win = new BrowserWindow({ width: 960, height: 740, webPreferences: { nodeIntegration: true, contextIsolation: false } });
+  const win = new BrowserWindow({
+    width: 960, height: 740,
+    webPreferences: { nodeIntegration: true, contextIsolation: false }
+  });
   win.loadFile("index.html");
 }
-app.whenReady().then(() => { createWindow(); app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); }); });
+app.whenReady().then(() => {
+  createWindow();
+  app.on("activate", () => {
+    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  });
+});
 app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
 JS
 
-          ##### frontend/index.html #####
+          ############################
+          # frontend/index.html
+          ############################
           cat > "$FRONT/index.html" << 'HTML'
 <!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <title>DIY配件 - 上新助手（Win EXE 版）</title>
@@ -210,7 +241,7 @@ const API_BASE = "http://127.0.0.1:8000";
 const drop = document.getElementById("drop"); const fileInput = document.getElementById("file"); let fileBlob=null;
 drop.addEventListener("click",()=>fileInput.click());
 drop.addEventListener("dragover",e=>{e.preventDefault(); drop.style.borderColor="#111";});
-drop.addEventListener("dragleave",e=>{drop.style.borderColor="#bbb";});
+drop.addEventListener("dragleave",()=>{drop.style.borderColor="#bbb";});
 drop.addEventListener("drop",e=>{e.preventDefault(); drop.style.borderColor="#bbb"; fileBlob=e.dataTransfer.files[0]; drop.textContent="已选择："+fileBlob.name;});
 fileInput.addEventListener("change",e=>{fileBlob=e.target.files[0]; drop.textContent="已选择："+fileBlob.name;});
 async function postForm(url,fd){ const r=await fetch(url,{method:"POST",body:fd}); return await r.json(); }
@@ -244,13 +275,17 @@ document.getElementById("btnTitle").addEventListener("click",async ()=>{
 </body></html>
 HTML
 
-          ##### frontend placeholders #####
+          ############################
+          # frontend placeholders
+          ############################
           : > "$FRONT/renderer.js"
           : > "$FRONT/preload.js"
 
-          ##### README #####
+          ############################
+          # README
+          ############################
           cat > "$ROOT/README_win_exe.md" << 'MD'
-# Windows Executable (with GPT title & image enhances)
+# Windows Executable (with GPT title & image enhancement)
 ## Backend
 - Double click: `backend\run-backend.bat`
 - Optional: `setx OPENAI_API_KEY "your_key"`
@@ -261,10 +296,13 @@ HTML
 - Output: `frontend\dist\DIY-Uploader-Setup-0.2.0.exe`
 MD
 
-          ##### Create ZIP #####
+          ############################
+          # Build ZIP
+          ############################
           (cd "$ROOT" && zip -r "../taobao_DIY_win_exe_ready_20251108_081529.zip" .)
+          ls -lh "taobao_DIY_win_exe_ready_20251108_081529.zip"
 
-      - name: Release with unique tag
+      - name: Release ZIP with unique tag
         uses: softprops/action-gh-release@v1
         with:
           tag_name: "v${{ github.run_number }}-${{ github.run_id }}"
